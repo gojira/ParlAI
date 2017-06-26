@@ -13,7 +13,7 @@ Alternatively, a regular RemoteAgent could be used, which implements its own
 parsing (and could also build its own dictionary).
 """
 
-from parlai.agents.remote_agent.agents import ParsedRemoteAgent
+from parlai.agents.remote_agent.remote_agent import ParsedRemoteAgent
 from parlai.core.worlds import create_task
 from parlai.core.dict import DictionaryAgent
 from parlai.core.params import ParlaiParser
@@ -53,7 +53,7 @@ def main():
     # set up dictionary
     print('Setting up dictionary.')
     dictionary = DictionaryAgent(opt)
-    if not opt.get('dict_loadpath'):
+    if not opt.get('dict_file'):
         # build dictionary since we didn't load it
         ordered_opt = copy.deepcopy(opt)
         for datatype in ['train:ordered', 'valid']:

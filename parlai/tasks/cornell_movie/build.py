@@ -19,8 +19,8 @@ def create_fb_format(lines_file, convo_file, outpath):
     codecs.register_error('strict', codecs.ignore_errors)
     with codecs.open(lines_file, 'r') as f:
         for line in f:
-            l = line.split(' ')
-            lines[l[0]] = ' '.join(l[8:]).strip('\n').replace('\t', ' ')
+            l = line.split(' +++$+++ ')
+            lines[l[0]] = ' '.join(l[4:]).strip('\n').replace('\t', ' ')
 
     cnt = 0
     with codecs.open(convo_file, 'r') as f:
@@ -59,7 +59,7 @@ def build(opt):
         # Download the data.
         fname = 'cornell_movie_dialogs_corpus.zip'
         url = 'http://www.mpi-sws.org/~cristian/data/' + fname
-        build_data.download_request(url, dpath, fname)
+        build_data.download(url, dpath, fname)
         build_data.untar(dpath, fname)
 
         dpext = os.path.join(dpath, 'cornell movie-dialogs corpus')

@@ -24,6 +24,8 @@ def load_embeddings(opt, word_dict):
     embeddings.normal_(0, 1)
 
     # Fill in embeddings
+    if not opt.get('embedding_file'):
+        raise RuntimeError('Tried to load embeddings with no embedding file.')
     with open(opt['embedding_file']) as f:
         for line in f:
             parsed = line.rstrip().split(' ')
@@ -183,34 +185,3 @@ class AverageMeter(object):
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
-
-
-class Timer(object):
-    """Computes elapsed time."""
-    def __init__(self):
-        self.running = True
-        self.total = 0
-        self.start = time.time()
-
-    def reset(self):
-        self.running = True
-        self.total = 0
-        self.start = time.time()
-        return self
-
-    def resume(self):
-        if not self.running:
-            self.running = True
-            self.start = time.time()
-        return self
-
-    def stop(self):
-        if self.running:
-            self.running = False
-            self.total += time.time() - self.start
-        return self
-
-    def time(self):
-        if self.running:
-            return self.total + time.time() - self.start
-        return self.total

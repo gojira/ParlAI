@@ -17,7 +17,7 @@ from jinja2 import FileSystemLoader
 import data_model
 
 # Dynamically generated code begin
-# Expects mturk_submit_url, frame_height, rds_host, rds_db_name, rds_username, rds_password, task_description, requester_key_gt, num_hits, is_sandbox
+# Expects mturk_submit_url, frame_height, rds_host, rds_db_name, rds_username, rds_password, task_description, requester_key_gt, num_hits, num_assignments, is_sandbox
 # {{block_task_config}}
 # Dynamically generated code end
 
@@ -46,24 +46,28 @@ def chat_index(event, context):
     if event['method'] == 'GET':
         """
         Handler for chat page endpoint. 
-        Expects <task_group_id>, <conversation_id> and <cur_agent_id> as query parameters.
         """
         template_context = {}
 
         try:
             task_group_id = event['query']['task_group_id']
-            conversation_id = event['query']['conversation_id']
+            hit_index = event['query'].get('hit_index', 'Pending')
+            assignment_index = event['query'].get('assignment_index', 'Pending')
+            all_agent_ids = event['query']['all_agent_ids']
             cur_agent_id = event['query']['cur_agent_id']
             assignment_id = event['query']['assignmentId'] # from mturk
+            task_additional_info = event['query'].get('task_additional_info', '') # Maximum length: 1000 characters
 
             if assignment_id == 'ASSIGNMENT_ID_NOT_AVAILABLE':
                 template_context['task_description'] = task_description
                 template_context['is_cover_page'] = True
             else:
                 template_context['task_group_id'] = task_group_id
-                template_context['conversation_id'] = conversation_id
+                template_context['hit_index'] = hit_index
+                template_context['assignment_index'] = assignment_index
                 template_context['cur_agent_id'] = cur_agent_id
-                template_context['task_description'] = task_description
+                template_context['all_agent_ids'] = all_agent_ids
+                template_context['task_description'] = task_description.replace('{{task_additional_info}}', task_additional_info)
                 template_context['mturk_submit_url'] = mturk_submit_url
                 template_context['is_cover_page'] = False
                 template_context['frame_height'] = frame_height
@@ -81,7 +85,7 @@ def save_hit_info(event, context):
         """
         params = event['body']
         task_group_id = params['task_group_id']
-        conversation_id = int(params['conversation_id'])
+        conversation_id = params['conversation_id']
         assignment_id = params['assignmentId']
         hit_id = params['hitId']
         worker_id = params['workerId']
@@ -110,8 +114,9 @@ def get_new_messages(event, context):
         last_message_id = int(event['query']['last_message_id'])
         conversation_id = None
         if 'conversation_id' in event['query']:
-            conversation_id = int(event['query']['conversation_id'])
+            conversation_id = event['query']['conversation_id']
         excluded_agent_id = event['query'].get('excluded_agent_id', None)
+        included_agent_id = event['query'].get('included_agent_id', None)
 
         conversation_dict, new_last_message_id = data_model.get_new_messages(
             db_session=db_session, 
@@ -119,6 +124,7 @@ def get_new_messages(event, context):
             conversation_id=conversation_id,
             after_message_id=last_message_id,
             excluded_agent_id=excluded_agent_id,
+            included_agent_id=included_agent_id,
             populate_meta_info=True
         )
 
@@ -139,7 +145,7 @@ def send_new_message(event, context):
         """
         params = event['body']
         task_group_id = params['task_group_id']
-        conversation_id = int(params['conversation_id'])
+        conversation_id = params['conversation_id']
         cur_agent_id = params['cur_agent_id']
         message_text = params['text'] if 'text' in params else None
         reward = params['reward'] if 'reward' in params else None
@@ -166,6 +172,25 @@ def send_new_message(event, context):
         
         return json.dumps(new_message)
 
+def get_hit_index_and_assignment_index(event, context):
+    if event['method'] == 'GET':
+        """
+        Handler for get assignment index endpoint. 
+        Expects <task_group_id>, <agent_id> as query parameters.
+        """
+        try:
+            task_group_id = event['query']['task_group_id']
+            agent_id = event['query']['agent_id']
+
+            return data_model.get_hit_index_and_assignment_index(
+                db_session=db_session,
+                task_group_id=task_group_id,
+                agent_id=agent_id,
+                num_assignments=num_assignments
+            )
+        except KeyError:
+            raise Exception('400')
+
 def approval_index(event, context):
     if event['method'] == 'GET':
         """
@@ -178,17 +203,20 @@ def approval_index(event, context):
                 raise Exception('403')
 
             task_group_id = event['query']['task_group_id']
-            conversation_id = event['query']['conversation_id']
-            cur_agent_id = event['query']['cur_agent_id']
+            hit_index = event['query']['hit_index']
+            assignment_index = event['query']['assignment_index']
+            mturk_agent_ids = event['query']['mturk_agent_ids']
 
             template_context = {}
             template_context['task_group_id'] = task_group_id
-            template_context['conversation_id'] = conversation_id
-            template_context['cur_agent_id'] = cur_agent_id
+            template_context['hit_index'] = hit_index
+            template_context['assignment_index'] = assignment_index
+            template_context['mturk_agent_ids'] = mturk_agent_ids
             template_context['task_description'] = task_description
             template_context['is_cover_page'] = False
             template_context['is_approval_page'] = True
             template_context['num_hits'] = int(num_hits)
+            template_context['num_assignments'] = int(num_assignments)
             template_context['frame_height'] = frame_height
 
             return _render_template(template_context, 'mturk_index.html')
@@ -209,42 +237,44 @@ def review_hit(event, context):
                 raise Exception('403')
 
             task_group_id = params['task_group_id']
-            conversation_id = int(params['conversation_id'])
+            conversation_id = params['conversation_id']
             action = params['action'] # 'approve' or 'reject'
 
-            hit_info = data_model.get_hit_info(
+            hit_infos = data_model.get_all_matching_hit_infos(
                 db_session=db_session, 
                 task_group_id=task_group_id, 
                 conversation_id=conversation_id
             )
 
-            if hit_info:
-                assignment_id = hit_info.assignment_id
-                client = boto3.client(
-                    service_name = 'mturk', 
-                    region_name = 'us-east-1',
-                    endpoint_url = 'https://mturk-requester-sandbox.us-east-1.amazonaws.com'
-                )
-                # Region is always us-east-1
-                if not hit_info.is_sandbox:
-                    client = boto3.client(service_name = 'mturk', region_name='us-east-1')
+            if len(hit_infos) > 0:
+                for hit_info in hit_infos:
+                    assignment_id = hit_info.assignment_id
+                    client = boto3.client(
+                        service_name = 'mturk', 
+                        region_name = 'us-east-1',
+                        endpoint_url = 'https://mturk-requester-sandbox.us-east-1.amazonaws.com'
+                    )
+                    # Region is always us-east-1
+                    if not hit_info.is_sandbox:
+                        client = boto3.client(service_name = 'mturk', region_name='us-east-1')
 
-                if action == 'approve':
-                    client.approve_assignment(AssignmentId=assignment_id)
-                    hit_info.approval_status = 'approved'
-                elif action == 'reject':
-                    client.reject_assignment(AssignmentId=assignment_id, RequesterFeedback='')
-                    hit_info.approval_status = 'rejected'
-                db_session.add(hit_info)
-                db_session.commit()
+                    if action == 'approve':
+                        client.approve_assignment(AssignmentId=assignment_id)
+                        hit_info.approval_status = 'approved'
+                    elif action == 'reject':
+                        client.reject_assignment(AssignmentId=assignment_id, RequesterFeedback='')
+                        hit_info.approval_status = 'rejected'
+                    db_session.add(hit_info)
+                    db_session.commit()
+
         except KeyError:
             raise Exception('400')
 
-def get_pending_review_count(event, context):
+def get_approval_status_count(event, context):
     if event['method'] == 'GET':
         """
-        Handler for getting the number of pending reviews.
-        Expects <requester_key>, <task_group_id> as query parameters.
+        Handler for getting the number of pending approvals.
+        Expects <requester_key>, <task_group_id>, <conversation_id> as query parameters.
         """
         try:
             requester_key = event['query']['requester_key']
@@ -252,17 +282,21 @@ def get_pending_review_count(event, context):
                 raise Exception('403')
 
             task_group_id = event['query']['task_group_id']
-            return data_model.get_pending_review_count(
+            conversation_id = event['query'].get('conversation_id', None)
+            approval_status = event['query']['approval_status']
+            return data_model.get_approval_status_count(
                 db_session=db_session,
-                task_group_id=task_group_id
+                task_group_id=task_group_id,
+                conversation_id=conversation_id,
+                approval_status=approval_status
             )
         except KeyError:
             raise Exception('400')
 
-def get_all_review_status(event, context):
+def get_all_approval_status(event, context):
     if event['method'] == 'GET':
         """
-        Handler for getting the number of pending reviews.
+        Handler for getting the number of pending approvals.
         Expects <requester_key>, <task_group_id> as query parameters.
         """
         try:
@@ -271,7 +305,7 @@ def get_all_review_status(event, context):
                 raise Exception('403')
 
             task_group_id = event['query']['task_group_id']
-            hit_info_objects = data_model.get_all_review_status(
+            hit_info_objects = data_model.get_all_approval_status(
                 db_session=db_session,
                 task_group_id=task_group_id
             )

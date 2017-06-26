@@ -16,6 +16,7 @@ def buildImage(opt):
         print('[building image data: ' + dpath + ']')
         build_data.remove_dir(dpath)
         build_data.make_dir(dpath)
+
         # download the image data.
         fname1 = 'train2014.zip'
         fname2 = 'val2014.zip'
@@ -23,28 +24,24 @@ def buildImage(opt):
 
         url = 'http://msvocds.blob.core.windows.net/coco2014/'
 
-        build_data.download(dpath, url + fname1)
-        build_data.download(dpath, url + fname2)
-        build_data.download(dpath, url + fname3)
+        build_data.download(url + fname1, dpath, fname1)
+        build_data.download(url + fname2, dpath, fname2)
+        build_data.download(url + fname3, dpath, fname3)
 
-        build_data.untar(dpath, fname1, False)
-        build_data.untar(dpath, fname2, False)
-        build_data.untar(dpath, fname3, False)
+        build_data.untar(dpath, fname1)
+        build_data.untar(dpath, fname2)
+        build_data.untar(dpath, fname3)
 
         # Mark the data as built.
         build_data.mark_done(dpath)
 
 
-
 def build(opt):
-    dpath = os.path.join(opt['datapath'], 'VQA-COCO2014')
+    dpath = os.path.join(opt['datapath'], 'VQA-v1')
 
     if not build_data.built(dpath):
         print('[building data: ' + dpath + ']')
-        for item in os.listdir(dpath):
-            item = os.path.join(dpath, item)
-            if os.path.isdir(item):
-                build_data.remove_dir(item)
+        build_data.remove_dir(dpath)
         build_data.make_dir(dpath)
 
         # Download the data.
@@ -56,12 +53,11 @@ def build(opt):
         fname5 = 'Annotations_Train_mscoco.zip'
 
         url = 'http://visualqa.org/data/mscoco/vqa/'
-        build_data.download(os.path.join(dpath, fname1), url + fname1)
-        build_data.download(os.path.join(dpath, fname2), url + fname2)
-        build_data.download(os.path.join(dpath, fname3), url + fname3)
-
-        build_data.download(os.path.join(dpath, fname4), url + fname4)
-        build_data.download(os.path.join(dpath, fname5), url + fname5)
+        build_data.download(url + fname1, dpath, fname1)
+        build_data.download(url + fname2, dpath, fname2)
+        build_data.download(url + fname3, dpath, fname3)
+        build_data.download(url + fname4, dpath, fname4)
+        build_data.download(url + fname5, dpath, fname5)
 
         build_data.untar(dpath, fname1)
         build_data.untar(dpath, fname2)

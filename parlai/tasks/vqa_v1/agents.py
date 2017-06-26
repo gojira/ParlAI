@@ -5,13 +5,13 @@
 # of patent rights can be found in the PATENTS file in the same directory.
 
 from parlai.core.agents import Teacher
+from parlai.core.dialog_teacher import load_image
 from .build import build, buildImage
 
-from PIL import Image
 import json
 import random
 import os
-import pdb
+
 
 def _path(opt):
     build(opt)
@@ -19,47 +19,38 @@ def _path(opt):
     dt = opt['datatype'].split(':')[0]
 
     if dt == 'train':
-        ques_suffix = 'v2_OpenEnded_mscoco_train2014'
-        annotation_suffix = 'v2_mscoco_train2014'
+        ques_suffix = 'MultipleChoice_mscoco_train2014'
+        annotation_suffix = 'mscoco_train2014'
         img_suffix = os.path.join('train2014', 'COCO_train2014_')
     elif dt == 'valid':
-        ques_suffix = 'v2_OpenEnded_mscoco_val2014'
-        annotation_suffix = 'v2_mscoco_val2014'
+        ques_suffix = 'MultipleChoice_mscoco_val2014'
+        annotation_suffix = 'mscoco_val2014'
         img_suffix = os.path.join('val2014', 'COCO_val2014_')
-    else:
-        ques_suffix = 'v2_OpenEnded_mscoco_test2015'
+    elif dt == 'test':
+        ques_suffix = 'MultipleChoice_mscoco_test2015'
         annotation_suffix = 'None'
         img_suffix = os.path.join('test2014', 'COCO_test2014_')
+    else:
+        raise RuntimeError('Not valid datatype.')
 
-    data_path = os.path.join(opt['datapath'], 'VQA-COCO2014-v2',
-        ques_suffix + '_questions.json')
+    data_path = os.path.join(opt['datapath'], 'VQA-v1',
+                             ques_suffix + '_questions.json')
 
-    annotation_path = os.path.join(opt['datapath'], 'VQA-COCO2014-v2',
-        annotation_suffix + '_annotations.json')
+    annotation_path = os.path.join(opt['datapath'], 'VQA-v1',
+                                   annotation_suffix + '_annotations.json')
 
     image_path = os.path.join(opt['datapath'], 'COCO-IMG', img_suffix)
 
     return data_path, annotation_path, image_path
 
 
-def _image_loader(opt, path):
-    """
-    Loads the appropriate image from the image_id and returns PIL Image format.
-    """
-    if not opt.get('no_images', False):
-        return Image.open(path).convert('RGB')
-    else:
-        return None
-
-
 class OeTeacher(Teacher):
     """
-    VQA v2.0 Open-Ended teacher, which loads the json vqa data and implements its
+    VQA Open-Ended teacher, which loads the json vqa data and implements its
     own `act` method for interacting with student agent.
-    agent.
     """
     def __init__(self, opt, shared=None):
-        super().__init__(opt)
+        super().__init__(opt, shared)
         self.datatype = opt['datatype']
         data_path, annotation_path, self.image_path = _path(opt)
 
@@ -70,7 +61,6 @@ class OeTeacher(Teacher):
         else:
             self._setup_data(data_path, annotation_path)
 
-
         # for ordered data in batch mode (especially, for validation and
         # testing), each teacher in the batch gets a start index and a step
         # size so they all process disparate sets of the data
@@ -80,7 +70,7 @@ class OeTeacher(Teacher):
         self.reset()
 
     def __len__(self):
-        return self.len
+        return len(self.ques['questions'])
 
     def reset(self):
         # Reset the dialog so that it is at the start of the epoch,
@@ -92,15 +82,17 @@ class OeTeacher(Teacher):
     def observe(self, observation):
         """Process observation for metrics."""
         if self.lastY is not None:
-            loss = self.metrics.update(observation, self.lastY)
+            self.metrics.update(observation, self.lastY)
             self.lastY = None
         return observation
 
     def act(self):
         if self.datatype == 'train':
-            self.episode_idx = random.randrange(self.len)
+            self.episode_idx = random.randrange(len(self))
         else:
-            self.episode_idx = (self.episode_idx + 1) % self.len
+            self.episode_idx = (self.episode_idx + self.step_size) % len(self)
+            if self.episode_idx == len(self) - self.step_size:
+                self.epochDone = True
 
         qa = self.ques['questions'][self.episode_idx]
         question = qa['question']
@@ -109,7 +101,7 @@ class OeTeacher(Teacher):
         img_path = self.image_path + '%012d.jpg' % (image_id)
 
         action = {
-            'image': _image_loader(self.opt, img_path),
+            'image': load_image(self.opt, img_path),
             'text': question,
             'episode_done': True
         }
@@ -140,7 +132,31 @@ class OeTeacher(Teacher):
             with open(annotation_path) as data_file:
                 self.annotation = json.load(data_file)
 
-        self.len = len(self.ques['questions'])
 
-class DefaultTeacher(OeTeacher):
+class McTeacher(OeTeacher):
+    """
+    VQA Multiple-Choice teacher, which inherits from OeTeacher but overrides
+    the label and label_candidates fields with multiple choice data.
+    """
+
+    def act(self):
+        action = super().act()
+
+        qa = self.ques['questions'][self.episode_idx]
+        multiple_choices = qa['multiple_choices']
+
+        action['label_candidates'] = multiple_choices
+
+        if not self.datatype.startswith('test'):
+            anno = self.annotation['annotations'][self.episode_idx]
+            self.lastY = [anno['multiple_choice_answer']]
+
+        if self.datatype.startswith('train'):
+            action['labels'] = self.lastY
+
+        return action
+
+
+class DefaultTeacher(McTeacher):
+    # default to Multiple-Choice Teacher
     pass

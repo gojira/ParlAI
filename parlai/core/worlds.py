@@ -6,47 +6,50 @@
 """This class defines the basic environments that define how agents interact
 with one another.
 
-World(object) provides a generic parent class, including __enter__ and __exit__
-    statements which allow you to guarantee that the shutdown method is called
-    and KeyboardInterrupts are less noisy (if desired).
+    ``World(object)`` provides a generic parent class, including ``__enter__``
+    and ``__exit__`` statements which allow you to guarantee that the shutdown
+    method is called and KeyboardInterrupts are less noisy (if desired).
 
-DialogPartnerWorld(World) provides a two-agent turn-based dialog setting
-MultiAgentDialogWorld provides a multi-agent setting.
+    ``DialogPartnerWorld(World)`` provides a two-agent turn-based dialog setting.
 
-MultiWorld(World) creates a set of environments (worlds) for the same agent
-   to multitask over, a different environment will be chosen per episode.
+    ``MultiAgentDialogWorld(World)`` provides a multi-agent setting.
 
-HogwildWorld(World) is a container that creates another world within itself for
+    ``MultiWorld(World)`` creates a set of environments (worlds) for the same agent
+    to multitask over, a different environment will be chosen per episode.
+
+    ``HogwildWorld(World)`` is a container that creates another world within itself for
     every thread, in order to have separate simulated environments for each one.
-    Each world gets its own agents initialized using the "share()" parameters
+    Each world gets its own agents initialized using the ``share()`` parameters
     from the original agents.
 
-BatchWorld(World) is a container for doing minibatch training over a world by
-collecting batches of N copies of the environment (each with different state).
+    ``BatchWorld(World)`` is a container for doing minibatch training over a world by
+    collecting batches of N copies of the environment (each with different state).
 
 
 All worlds are initialized with the following parameters:
-opt -- contains any options needed to set up the agent. This generally contains
-    all command-line arguments recognized from core.params, as well as other
-    options that might be set through the framework to enable certain modes.
-agents -- the set of agents that should be attached to the world,
-    e.g. for DialogPartnerWorld this could be the teacher (that defines the
-    task/dataset) and the learner agent. This is ignored in the case of
-    sharing, and the shared parameter is used instead to initalize agents.
-shared (optional) -- if not None, contains any shared data used to construct
-    this particular instantiation of the world. This data might have been
-    initialized by another world, so that different agents can share the same
-    data (possibly in different Processes).
+
+    ``opt`` -- contains any options needed to set up the agent. This generally contains
+        all command-line arguments recognized from core.params, as well as other
+        options that might be set through the framework to enable certain modes.
+    ``agents`` -- the set of agents that should be attached to the world,
+        e.g. for DialogPartnerWorld this could be the teacher (that defines the
+        task/dataset) and the learner agent. This is ignored in the case of
+        sharing, and the shared parameter is used instead to initalize agents.
+    ``shared`` (optional) -- if not None, contains any shared data used to construct
+        this particular instantiation of the world. This data might have been
+        initialized by another world, so that different agents can share the same
+        data (possibly in different Processes).
 """
 
 import copy
+import math
 import importlib
 import random
 
 from multiprocessing import Process, Value, Condition, Semaphore
-from collections import deque
 from parlai.core.agents import _create_task_agents, create_agents_from_shared
 from parlai.tasks.tasks import ids_to_tasks
+
 
 def validate(observation):
     """Make sure the observation table is valid, or raise an error."""
@@ -60,6 +63,49 @@ def validate(observation):
         return observation
     else:
         raise RuntimeError('Must return dictionary from act().')
+
+
+def display_messages(msgs):
+    """Returns a string describing the set of messages provided"""
+    lines = []
+    episode_done = False
+    for index, msg in enumerate(msgs):
+        if msg is None:
+            continue
+        if msg.get('episode_done'):
+            episode_done = True
+        # Possibly indent the text (for the second speaker, if two).
+        space = ''
+        if len(msgs) == 2 and index == 1:
+            space = '   '
+        if msg.get('reward', None) is not None:
+            lines.append(space + '[reward: {r}]'.format(r=msg['reward']))
+        if msg.get('text', ''):
+            ID = '[' + msg['id'] + ']: ' if 'id' in msg else ''
+            lines.append(space + ID + msg['text'])
+        if type(msg.get('image')) == str:
+            lines.append(msg['image'])
+        if msg.get('labels'):
+            lines.append(space + ('[labels: {}]'.format(
+                        '|'.join(msg['labels']))))
+        if msg.get('label_candidates'):
+            cand_len = len(msg['label_candidates'])
+            if cand_len <= 10:
+                lines.append(space + ('[cands: {}]'.format(
+                        '|'.join(msg['label_candidates']))))
+            else:
+                # select five label_candidates from the candidate set,
+                # can't slice in because it's a set
+                cand_iter = iter(msg['label_candidates'])
+                display_cands = (next(cand_iter) for _ in range(5))
+                # print those cands plus how many cands remain
+                lines.append(space + ('[cands: {}{}]'.format(
+                        '|'.join(display_cands),
+                        '| ...and {} more'.format(cand_len - 5)
+                        )))
+    if episode_done:
+        lines.append('- - - - - - - - - - - - - - - - - - - - -')
+    return '\n'.join(lines)
 
 
 class World(object):
@@ -91,40 +137,7 @@ class World(object):
         By default, display the messages between the agents."""
         if not hasattr(self, 'acts'):
             return ''
-        lines = []
-        for index, msg in enumerate(self.acts):
-            if msg is None:
-                continue
-            # Possibly indent the text (for the second speaker, if two).
-            space = ''
-            if len(self.acts) == 2 and index == 1:
-                space = '   '
-            if msg.get('reward', None) is not None:
-                lines.append(space + '[reward: {r}]'.format(r=msg['reward']))
-            if msg.get('text', ''):
-                ID = '[' + msg['id'] + ']: ' if 'id' in msg else ''
-                lines.append(space + ID + msg['text'])
-            if msg.get('labels', False):
-                lines.append(space + ('[labels: {}]'.format(
-                            '|'.join(msg['labels']))))
-            if msg.get('label_candidates', False):
-                cand_len = len(msg['label_candidates'])
-                if cand_len <= 10:
-                    lines.append(space + ('[cands: {}]'.format(
-                            '|'.join(msg['label_candidates']))))
-                else:
-                    # select five label_candidates from the candidate set,
-                    # can't slice in because it's a set
-                    cand_iter = iter(msg['label_candidates'])
-                    display_cands = (next(cand_iter) for _ in range(5))
-                    # print those cands plus how many cands remain
-                    lines.append(space + ('[cands: {}{}]'.format(
-                            '|'.join(display_cands),
-                            '| ...and {} more'.format(cand_len - 5)
-                            )))
-        if self.episode_done():
-            lines.append('- - - - - - - - - - - - - - - - - - - - -')
-        return '\n'.join(lines)
+        return display_messages(self.acts)
 
     def episode_done(self):
         """Whether the episode is done or not. """
@@ -161,16 +174,20 @@ class World(object):
         return self.acts
 
     def __enter__(self):
-        """Empty enter provided for use with `with` statement.
+        """Empty enter provided for use with ``with`` statement.
+
         e.g:
-        with World() as world:
-            for n in range(10):
-                n.parley()
+
+        .. code-block:: python
+
+            with World() as world:
+                for n in range(10):
+                    n.parley()
         """
         return self
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
-        """After `with` statement, call shutdown."""
+        """After ``with`` statement, call shutdown."""
         silent_exit = isinstance(exc_value, KeyboardInterrupt)
         self.shutdown()
         return silent_exit
@@ -234,7 +251,8 @@ class DialogPartnerWorld(World):
                 if hasattr(self.agents[0], 'epoch_done') else False)
 
     def report(self):
-        return self.agents[0].report()
+        if hasattr(self.agents[0], 'report'):
+            return self.agents[0].report()
 
     def __len__(self):
         return len(self.agents[0])
@@ -367,16 +385,15 @@ class MultiWorld(World):
             self.new_world = False
             self.parleys = 0
             if self.random:
+                # select random world
                 self.world_idx = random.randrange(len(self.worlds))
             else:
-                start_idx = self.world_idx
-                keep_looking = True
-                while keep_looking:
+                # do at most one full loop looking for unfinished world
+                for _ in range(len(self.worlds)):
                     self.world_idx = (self.world_idx + 1) % len(self.worlds)
-                    keep_looking = (self.worlds[self.world_idx].epoch_done() and
-                                    start_idx != self.world_idx)
-                if start_idx == self.world_idx:
-                    return {'text': 'There are no more examples remaining.'}
+                    if not self.worlds[self.world_idx].epoch_done():
+                        # if this world has examples ready, break
+                        break
 
     def parley(self):
         self.parley_init()
@@ -412,9 +429,13 @@ class MultiWorld(World):
             m['total'] = total
         return m
 
+    def reset(self):
+        for w in self.worlds:
+            w.reset()
+
 
 def override_opts_in_shared(table, overrides):
-    """Looks recursively for opt dictionaries within shared dict and overrides
+    """Looks recursively for ``opt`` dictionaries within shared dict and overrides
     any key-value pairs with pairs from the overrides dict.
     """
     if 'opt' in table:
@@ -435,8 +456,8 @@ def override_opts_in_shared(table, overrides):
 class BatchWorld(World):
     """Creates a separate world for each item in the batch, sharing
     the parameters for each.
-    The underlying world(s) it is batching can be either DialogPartnerWorld,
-    MultiAgentWorld or MultiWorld.
+    The underlying world(s) it is batching can be either ``DialogPartnerWorld``,
+    ``MultiAgentWorld`` or ``MultiWorld``.
     """
 
     def __init__(self, opt, world):
@@ -449,7 +470,7 @@ class BatchWorld(World):
             # make sure that any opt dicts in shared have batchindex set to i
             # this lets all shared agents know which batchindex they have,
             # which is needed for ordered data (esp valid/test sets)
-            override_opts_in_shared(shared, { 'batchindex': i })
+            override_opts_in_shared(shared, {'batchindex': i})
             self.worlds.append(shared['world_class'](opt, None, shared))
         self.batch_observations = [ None ] * len(self.world.get_agents())
 
@@ -516,6 +537,9 @@ class BatchWorld(World):
         s += ("[--end of batch--]")
         return s
 
+    def __len__(self):
+        return math.ceil(sum(len(w) for w in self.worlds) / len(self.worlds))
+
     def getID(self):
         return self.world.getID()
 
@@ -531,10 +555,14 @@ class BatchWorld(World):
     def report(self):
         return self.worlds[0].report()
 
+    def reset(self):
+        for w in self.worlds:
+            w.reset()
+
 
 class HogwildProcess(Process):
-    """Process child used for HogwildWorld.
-    Each HogwildProcess contain its own unique World.
+    """Process child used for ``HogwildWorld``.
+    Each ``HogwildProcess`` contain its own unique ``World``.
     """
 
     def __init__(self, tid, world, opt, agents, sem, fin, term, cnt):
@@ -550,7 +578,7 @@ class HogwildProcess(Process):
 
     def run(self):
         """Runs normal parley loop for as many examples as this thread can get
-        ahold of via the semaphore queued_items.
+        ahold of via the semaphore ``queued_items``.
         """
         shared_agents = create_agents_from_shared(self.agent_shares)
         world = self.world_type(self.opt, shared_agents)
@@ -573,15 +601,19 @@ class HogwildWorld(World):
     """Creates a separate world for each thread (process).
 
     Maintains a few shared objects to keep track of state:
+
     - A Semaphore which represents queued examples to be processed. Every call
-        of parley increments this counter; every time a Process claims an
-        example, it decrements this counter.
+      of parley increments this counter; every time a Process claims an
+      example, it decrements this counter.
+
     - A Condition variable which notifies when there are no more queued
-        examples.
+      examples.
+
     - A boolean Value which represents whether the inner worlds should shutdown.
+
     - An integer Value which contains the number of unprocessed examples queued
-        (acquiring the semaphore only claims them--this counter is decremented
-        once the processing is complete).
+      (acquiring the semaphore only claims them--this counter is decremented
+      once the processing is complete).
     """
 
     def __init__(self, world_class, opt, agents):
@@ -675,9 +707,9 @@ def create_task_world(opt, user_agents):
 
 def create_task(opt, user_agents):
     """Creates a world + task_agents (aka a task)
-    assuming opt['task']="task_dir:teacher_class:options"
-    e.g. "babi:Task1k:1" or "#babi-1k" or "#QA",
-    see parlai/tasks/tasks.py and see parlai/tasks/task_list.py
+    assuming ``opt['task']="task_dir:teacher_class:options"``
+    e.g. ``"babi:Task1k:1"`` or ``"#babi-1k"`` or ``"#QA"``,
+    see ``parlai/tasks/tasks.py`` and see ``parlai/tasks/task_list.py``
     for list of tasks.
     """
     if type(user_agents) != list:

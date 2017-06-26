@@ -9,8 +9,8 @@ from .build import build, buildImage
 
 from PIL import Image
 import json
-import random
 import os
+
 
 def _path(opt):
     build(opt)
@@ -18,16 +18,19 @@ def _path(opt):
     dt = opt['datatype'].split(':')[0]
 
     if dt == 'train':
-        suffix = 'train'
+        suffix = 'train_train'
         img_suffix = os.path.join('train2014', 'COCO_train2014_')
     elif dt == 'valid':
-        suffix = 'val'
+        suffix = 'train_valid'
+        img_suffix = os.path.join('train2014', 'COCO_train2014_')
+    elif dt == 'test':
+        suffix = 'val_test'
         img_suffix = os.path.join('val2014', 'COCO_val2014_')
     else:
         raise RuntimeError('Not valid datatype.')
 
     data_path = os.path.join(opt['datapath'], 'VisDial-v0.9',
-        'visdial_0.9_' + suffix + '.json')
+                             'visdial_0.9_' + suffix + '.json')
 
     image_path = os.path.join(opt['datapath'], 'COCO-IMG', img_suffix)
 
@@ -81,6 +84,9 @@ class DefaultTeacher(DialogTeacher):
                 answer_options = []
                 for ans_id in qa['answer_options']:
                     answer_options.append(self.answers[ans_id])
-                #answer_options = qa['answer_options']
-                gt_index = qa['gt_index']
-                yield (question, answer, 'None', answer_options, img_path), True
+                if i == 0:
+                    # prepend with caption on first question
+                    # only load image on first item
+                    yield (caption + '\n' + question, answer, None, answer_options, img_path), episode_done
+                else:
+                    yield (question, answer, None, answer_options), episode_done
