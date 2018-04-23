@@ -17,10 +17,8 @@ from parlai.agents.remote_agent.remote_agent import ParsedRemoteAgent
 from parlai.core.worlds import create_task
 from parlai.core.dict import DictionaryAgent
 from parlai.core.params import ParlaiParser
-from parlai.core.worlds import DialogPartnerWorld, HogwildWorld
 
 import copy
-import math
 import os
 import sys
 import time
@@ -56,35 +54,37 @@ def main():
     if not opt.get('dict_file'):
         # build dictionary since we didn't load it
         ordered_opt = copy.deepcopy(opt)
-        for datatype in ['train:ordered', 'valid']:
-            # we use train and valid sets to build dictionary
-            ordered_opt['datatype'] = datatype
-            ordered_opt['numthreads'] = 1
-            world_dict = create_task(ordered_opt, dictionary)
+        ordered_opt['datatype'] = 'train:ordered'
+        ordered_opt['numthreads'] = 1
+        world_dict = create_task(ordered_opt, dictionary)
 
-            print('Dictionary building on {} data.'.format(datatype))
-            cnt = 0
-            # pass examples to dictionary
-            for _ in world_dict:
-                cnt += 1
-                if cnt > opt['dict_max_exs'] and opt['dict_max_exs'] > 0:
-                    print('Processed {} exs, moving on.'.format(
-                          opt['dict_max_exs']))
-                    # don't wait too long...
-                    break
+        print('Dictionary building on training data.')
+        cnt = 0
+        # pass examples to dictionary
+        while not world_dict.epoch_done():
+            cnt += 1
+            if cnt > opt['dict_max_exs'] and opt['dict_max_exs'] > 0:
+                print('Processed {} exs, moving on.'.format(
+                      opt['dict_max_exs']))
+                # don't wait too long...
+                break
 
-                world_dict.parley()
+            world_dict.parley()
 
         # we need to save the dictionary to load it in memnn (sort it by freq)
+        dictionary.sort()
         dictionary.save('/tmp/dict.txt', sort=True)
 
     print('Dictionary ready, moving on to training.')
 
     opt['datatype'] = 'train'
-    agent = ParsedRemoteAgent(opt, {'dictionary': dictionary})
+    agent = ParsedRemoteAgent(opt, {'dictionary_shared': dictionary.share()})
     world_train = create_task(opt, agent)
-    opt['datatype'] = 'valid'
-    world_valid = create_task(opt, agent)
+
+    valid_opt = copy.deepcopy(opt)
+    valid_opt['datatype'] = 'valid'
+    valid_opt['numthreads'] = 1  # switch to 1 thread, the memnn code will handle it better
+    world_valid = create_task(valid_opt, agent)
 
     start = time.time()
     with world_train:
@@ -92,11 +92,10 @@ def main():
             print('[ training ]')
             for _ in range(opt['num_examples'] * opt.get('numthreads', 1)):
                 world_train.parley()
-            world_train.synchronize()
 
             print('[ validating ]')
             world_valid.reset()
-            for _ in world_valid:  # check valid accuracy
+            while not world_valid.epoch_done():  # check valid accuracy
                 world_valid.parley()
 
             print('[ validation summary. ]')
@@ -105,8 +104,8 @@ def main():
             if report_valid['accuracy'] > 0.95:
                 break
 
-        # show some example dialogs after training:
-        world_valid = create_task(opt, agent)
+        #show some example dialogs after training:
+        world_valid = create_task(valid_opt, agent)
         for _k in range(3):
             world_valid.parley()
             print(world_valid.display())
